@@ -1,0 +1,65 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── User Model ──────────────────────────────────────────────────────────────
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+// ─── Transit Stations (PostGIS geometry) ─────────────────────────────────────
+// NOTE: Prisma does not support PostGIS geometry natively.
+// The `location` field uses Unsupported("geometry(Point, 4326)") and is
+// queried exclusively via prisma.$queryRaw with ST_* functions.
+model TransitStation {
+  id       String                              @id @default(uuid())
+  name     String
+  type     String  // "train" | "metro" | "tram" | "bus"
+  city     String  @default("Lille")
+  location Unsupported("geometry(Point, 4326)")
+
+  @@map("transit_stations")
+}
+
+// ─── Bike Docks (PostGIS geometry) ───────────────────────────────────────────
+model BikeDock {
+  id             String                              @id @default(uuid())
+  name           String
+  availableBikes Int                                 @default(0) @map("available_bikes")
+  totalSlots     Int                                 @default(10) @map("total_slots")
+  provider       String                              @default("Nextbike")
+  location       Unsupported("geometry(Point, 4326)")
+
+  @@map("bike_docks")
+}
+
+// ─── Route Cache ─────────────────────────────────────────────────────────────
+// Persisted cache fallback (Redis is primary; this is secondary/audit log)
+model RouteCache {
+  id        String   @id @default(uuid())
+  queryHash String   @unique @map("query_hash")
+  query     String
+  result    Json
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  expiresAt DateTime @map("expires_at")
+
+  @@map("route_cache")
+}
