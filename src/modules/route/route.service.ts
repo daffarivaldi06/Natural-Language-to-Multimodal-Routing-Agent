@@ -3,7 +3,8 @@ import { runRoutingAgent } from "../../agent";
 import { cacheGet, cacheSet } from "../../cache/redis";
 import { prisma } from "../../db/prisma";
 import { config } from "../../config";
-import { RoutingResult } from "./route.types";
+import { RoutingResult, RouteLeg } from "./route.types";
+import { GeocodingService } from "../../services/geocoding";
 
 /**
  * Generates a deterministic SHA-256 cache key from the normalized query string.
@@ -31,31 +32,59 @@ function extractJsonFromAgentOutput(output: string): RoutingResult | null {
   return null;
 }
 
+/**
+ * Enriches the RoutingResult by attaching accurate spatial coordinates (lat/lng)
+ * to every leg origin and destination.
+ */
+async function enrichRouteCoordinates(result: RoutingResult): Promise<RoutingResult> {
+  if (!result || !result.legs || result.legs.length === 0) {
+    return result;
+  }
+
+  // Enrich each leg with coordinates if missing
+  for (let i = 0; i < result.legs.length; i++) {
+    const leg = result.legs[i];
+
+    if (!leg.originCoords && leg.from) {
+      const geo = await GeocodingService.geocode(leg.from);
+      leg.originCoords = { lat: geo.lat, lng: geo.lng };
+    }
+
+    if (!leg.destinationCoords && leg.to) {
+      const geo = await GeocodingService.geocode(leg.to);
+      leg.destinationCoords = { lat: geo.lat, lng: geo.lng };
+    }
+  }
+
+  return result;
+}
+
 export async function processRoutingQuery(
   query: string,
   userId: string
 ): Promise<{ result: RoutingResult; cached: boolean; cacheKey: string }> {
   const cacheKey = buildCacheKey(query);
 
-  // ── 1. Check Redis cache ──────────────────────────────────────────────────
+  // ── 1. Check Redis cache ──
   const cached = await cacheGet<RoutingResult>(cacheKey);
   if (cached) {
     console.log(`[RouteService] Cache HIT for key: ${cacheKey}`);
-    return { result: { ...cached, cachedAt: new Date().toISOString() }, cached: true, cacheKey };
+    const enrichedCached = await enrichRouteCoordinates(cached);
+    return { result: { ...enrichedCached, cachedAt: new Date().toISOString() }, cached: true, cacheKey };
   }
 
-  // ── 2. Run the LangChain agent ────────────────────────────────────────────
+  // ── 2. Run the LangChain agent ──
   console.log(`[RouteService] Cache MISS. Running agent for query: "${query}"`);
   const agentResult = await runRoutingAgent(query);
 
-  // ── 3. Parse structured JSON from agent output ────────────────────────────
+  // ── 3. Parse structured JSON from agent output ──
   let routingResult = extractJsonFromAgentOutput(agentResult.output);
 
   if (!routingResult) {
     // Fallback: wrap the raw text output in a minimal result
     routingResult = {
-      origin: "Unknown",
-      destination: "Unknown",
+      origin: "Origin",
+      destination: "Destination",
       legs: [],
       totalEstimatedDurationSeconds: 0,
       totalDistanceMeters: 0,
@@ -63,10 +92,13 @@ export async function processRoutingQuery(
     };
   }
 
-  // ── 4. Store in Redis ─────────────────────────────────────────────────────
+  // ── 4. Spatial Coordinate Enrichment (Guarantee lat/lng on every leg) ──
+  routingResult = await enrichRouteCoordinates(routingResult);
+
+  // ── 5. Store in Redis ──
   await cacheSet(cacheKey, routingResult, config.cache.routeTtlSeconds);
 
-  // ── 5. Persist to PostgreSQL route_cache (audit log) ─────────────────────
+  // ── 6. Persist to PostgreSQL route_cache (audit log) ──
   try {
     const expiresAt = new Date(Date.now() + config.cache.routeTtlSeconds * 1000);
     await prisma.routeCache.upsert({

@@ -28,7 +28,11 @@ export const config = {
 
   google: {
     apiKey: requireEnv("GOOGLE_API_KEY"),
+
     model: "gemini-3-flash-preview",
+    // model: "gemini-2.5-flash",
+    // model: "gemini-3.5-flash-lite",
+
     /** Hard cap: free tier allows 15 RPM max; we use 10 for safety margin */
     maxRpm: 15,
     /**
