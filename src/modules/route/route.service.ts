@@ -35,24 +35,36 @@ function extractJsonFromAgentOutput(output: string): RoutingResult | null {
 /**
  * Enriches the RoutingResult by attaching accurate spatial coordinates (lat/lng)
  * to every leg origin and destination.
+ * ⚡ Optimized: Fetches coordinates in parallel and deduplicates queries using an in-memory cache.
  */
 async function enrichRouteCoordinates(result: RoutingResult): Promise<RoutingResult> {
   if (!result || !result.legs || result.legs.length === 0) {
     return result;
   }
 
-  // Enrich each leg with coordinates if missing
-  for (let i = 0; i < result.legs.length; i++) {
-    const leg = result.legs[i];
+  // Collect all unique locations that need geocoding
+  const uniqueLocations = new Set<string>();
+  for (const leg of result.legs) {
+    if (!leg.originCoords && leg.from) uniqueLocations.add(leg.from);
+    if (!leg.destinationCoords && leg.to) uniqueLocations.add(leg.to);
+  }
 
-    if (!leg.originCoords && leg.from) {
-      const geo = await GeocodingService.geocode(leg.from);
-      leg.originCoords = { lat: geo.lat, lng: geo.lng };
+  // Resolve all unique locations concurrently
+  const geocodedMap = new Map<string, { lat: number; lng: number }>();
+  await Promise.all(
+    Array.from(uniqueLocations).map(async (place) => {
+      const geo = await GeocodingService.geocode(place);
+      geocodedMap.set(place, { lat: geo.lat, lng: geo.lng });
+    })
+  );
+
+  // Enrich each leg with the resolved coordinates
+  for (const leg of result.legs) {
+    if (!leg.originCoords && leg.from && geocodedMap.has(leg.from)) {
+      leg.originCoords = geocodedMap.get(leg.from);
     }
-
-    if (!leg.destinationCoords && leg.to) {
-      const geo = await GeocodingService.geocode(leg.to);
-      leg.destinationCoords = { lat: geo.lat, lng: geo.lng };
+    if (!leg.destinationCoords && leg.to && geocodedMap.has(leg.to)) {
+      leg.destinationCoords = geocodedMap.get(leg.to);
     }
   }
 
